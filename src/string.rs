@@ -11,7 +11,7 @@ use crate::traits::IntoLua;
 use crate::types::{LuaType, ValueRef};
 use crate::value::Value;
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 use {
     serde::ser::{Serialize, Serializer},
     std::result::Result as StdResult,
@@ -119,7 +119,7 @@ impl String {
         let lua = self.0.lua.upgrade();
         let slice = {
             let rawlua = lua.lock();
-            let ref_thread = rawlua.ref_thread();
+            let ref_thread = rawlua.ref_thread(self.0.aux_thread);
 
             mlua_debug_assert!(
                 ffi::lua_type(ref_thread, self.0.index) == ffi::LUA_TSTRING,
@@ -211,7 +211,7 @@ impl Hash for String {
     }
 }
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 impl Serialize for String {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where

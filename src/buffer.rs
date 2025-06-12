@@ -1,4 +1,4 @@
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 use serde::ser::{Serialize, Serializer};
 
 use crate::types::ValueRef;
@@ -25,7 +25,6 @@ impl Buffer {
     }
 
     /// Returns `true` if the buffer is empty.
-    #[doc(hidden)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -62,7 +61,7 @@ impl Buffer {
     unsafe fn as_raw_parts(&self) -> (*mut u8, usize) {
         let lua = self.0.lua.lock();
         let mut size = 0usize;
-        let buf = ffi::lua_tobuffer(lua.ref_thread(), self.0.index, &mut size);
+        let buf = ffi::lua_tobuffer(lua.ref_thread(self.0.aux_thread), self.0.index, &mut size);
         mlua_assert!(!buf.is_null(), "invalid Luau buffer");
         (buf as *mut u8, size)
     }
@@ -73,7 +72,7 @@ impl Buffer {
     }
 }
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 impl Serialize for Buffer {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_bytes(unsafe { self.as_slice() })

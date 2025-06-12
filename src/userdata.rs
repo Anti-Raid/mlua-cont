@@ -18,7 +18,7 @@ use crate::value::Value;
 #[cfg(feature = "async")]
 use std::future::Future;
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 use {
     serde::ser::{self, Serialize, Serializer},
     std::result::Result as StdResult,
@@ -634,7 +634,7 @@ impl AnyUserData {
     #[inline]
     pub fn borrow<T: 'static>(&self) -> Result<UserDataRef<T>> {
         let lua = self.0.lua.lock();
-        unsafe { UserDataRef::borrow_from_stack(&lua, lua.ref_thread(), self.0.index) }
+        unsafe { UserDataRef::borrow_from_stack(&lua, lua.ref_thread(self.0.aux_thread), self.0.index) }
     }
 
     /// Borrow this userdata immutably if it is of type `T`, passing the borrowed value
@@ -645,7 +645,15 @@ impl AnyUserData {
         let lua = self.0.lua.lock();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
-        unsafe { borrow_userdata_scoped(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
+        unsafe {
+            borrow_userdata_scoped(
+                lua.ref_thread(self.0.aux_thread),
+                self.0.index,
+                type_id,
+                type_hints,
+                f,
+            )
+        }
     }
 
     /// Borrow this userdata mutably if it is of type `T`.
@@ -661,7 +669,7 @@ impl AnyUserData {
     #[inline]
     pub fn borrow_mut<T: 'static>(&self) -> Result<UserDataRefMut<T>> {
         let lua = self.0.lua.lock();
-        unsafe { UserDataRefMut::borrow_from_stack(&lua, lua.ref_thread(), self.0.index) }
+        unsafe { UserDataRefMut::borrow_from_stack(&lua, lua.ref_thread(self.0.aux_thread), self.0.index) }
     }
 
     /// Borrow this userdata mutably if it is of type `T`, passing the borrowed value
@@ -672,7 +680,15 @@ impl AnyUserData {
         let lua = self.0.lua.lock();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
-        unsafe { borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
+        unsafe {
+            borrow_userdata_scoped_mut(
+                lua.ref_thread(self.0.aux_thread),
+                self.0.index,
+                type_id,
+                type_hints,
+                f,
+            )
+        }
     }
 
     /// Takes the value out of this userdata.
@@ -685,7 +701,7 @@ impl AnyUserData {
         let lua = self.0.lua.lock();
         match lua.get_userdata_ref_type_id(&self.0)? {
             Some(type_id) if type_id == TypeId::of::<T>() => unsafe {
-                let ref_thread = lua.ref_thread();
+                let ref_thread = lua.ref_thread(self.0.aux_thread);
                 if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index)).has_exclusive_access() {
                     take_userdata::<UserDataStorage<T>>(ref_thread, self.0.index).into_inner()
                 } else {
@@ -708,7 +724,7 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
 
-            lua.push_userdata_ref(&self.0)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
             protect_lua!(state, 1, 1, fn(state) {
                 if ffi::luaL_callmeta(state, -1, cstr!("__gc")) == 0 {
                     ffi::lua_pushboolean(state, 0);
@@ -764,8 +780,8 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
-            lua.push_userdata_ref(&self.0)?;
-            lua.push(v)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
+            lua.push_at(state, v)?;
 
             // Multiple (extra) user values are emulated by storing them in a table
             protect_lua!(state, 2, 0, |state| {
@@ -802,7 +818,7 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
-            lua.push_userdata_ref(&self.0)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
 
             // Multiple (extra) user values are emulated by storing them in a table
             if ffi::lua_getuservalue(state, -1) != ffi::LUA_TTABLE {
@@ -810,7 +826,7 @@ impl AnyUserData {
             }
             ffi::lua_rawgeti(state, -1, n as ffi::lua_Integer);
 
-            V::from_lua(lua.pop_value(), lua.lua())
+            V::from_lua(lua.pop_value_at(state), lua.lua())
         }
     }
 
@@ -826,8 +842,8 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
-            lua.push_userdata_ref(&self.0)?;
-            lua.push(v)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
+            lua.push_at(state, v)?;
 
             // Multiple (extra) user values are emulated by storing them in a table
             protect_lua!(state, 2, 0, |state| {
@@ -857,7 +873,7 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
-            lua.push_userdata_ref(&self.0)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
 
             // Multiple (extra) user values are emulated by storing them in a table
             if ffi::lua_getuservalue(state, -1) != ffi::LUA_TTABLE {
@@ -866,7 +882,7 @@ impl AnyUserData {
             push_string(state, name.as_bytes(), !lua.unlikely_memory_error())?;
             ffi::lua_rawget(state, -2);
 
-            V::from_stack(-1, &lua)
+            V::from_specified_stack(-1, &lua, state)
         }
     }
 
@@ -888,7 +904,7 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
 
-            lua.push_userdata_ref(&self.0)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
             ffi::lua_getmetatable(state, -1); // Checked that non-empty on the previous call
             Ok(Table(lua.pop_ref()))
         }
@@ -921,7 +937,7 @@ impl AnyUserData {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
 
-            lua.push_userdata_ref(&self.0)?;
+            lua.push_userdata_ref_at(&self.0, state)?;
             let protect = !lua.unlikely_memory_error();
             let name_type = if protect {
                 protect_lua!(state, 1, 1, |state| {
@@ -957,13 +973,13 @@ impl AnyUserData {
 
     /// Returns `true` if this [`AnyUserData`] is serializable (e.g. was created using
     /// [`Lua::create_ser_userdata`]).
-    #[cfg(feature = "serialize")]
+    #[cfg(feature = "serde")]
     pub(crate) fn is_serializable(&self) -> bool {
         let lua = self.0.lua.lock();
         let is_serializable = || unsafe {
             // Userdata must be registered and not destructed
             let _ = lua.get_userdata_ref_type_id(&self.0)?;
-            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(), self.0.index);
+            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(self.0.aux_thread), self.0.index);
             Ok::<_, Error>((*ud).is_serializable())
         };
         is_serializable().unwrap_or(false)
@@ -1041,7 +1057,7 @@ where
     }
 }
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 impl Serialize for AnyUserData {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -1052,7 +1068,7 @@ impl Serialize for AnyUserData {
             let _ = lua
                 .get_userdata_ref_type_id(&self.0)
                 .map_err(ser::Error::custom)?;
-            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(), self.0.index);
+            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(self.0.aux_thread), self.0.index);
             ud.serialize(serializer)
         }
     }
@@ -1072,8 +1088,8 @@ impl AnyUserData {
     /// [`IntoLua`] trait.
     ///
     /// This function uses [`Lua::create_ser_any_userdata`] under the hood.
-    #[cfg(feature = "serialize")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serialize")))]
+    #[cfg(feature = "serde")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     pub fn wrap_ser<T: Serialize + MaybeSend + 'static>(data: T) -> impl IntoLua {
         WrappedUserdata(move |lua| lua.create_ser_any_userdata(data))
     }
